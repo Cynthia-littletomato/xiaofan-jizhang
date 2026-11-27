@@ -72,6 +72,11 @@
   .prog-fill{height:100%;border-radius:6px;transition:width .5s ease;background:var(--leaf)}
   .prog-foot{display:flex;font-size:11px;color:var(--ink2)}
   .prog-foot .r{margin-left:auto}
+  /* 存款余额卡片 */
+  .assetrow{display:flex;gap:8px;margin-top:10px}
+  .assetrow .c{flex:1;background:#FFFCF4;border:1px solid var(--line);border-radius:12px;padding:9px 10px;min-width:0}
+  .assetrow .c .k{font-size:10.5px;color:var(--ink2);line-height:1.35}
+  .assetrow .c .v{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:3px}
   .cmp{display:flex;flex-direction:column;gap:12px}
   .cmp .hd{display:flex;align-items:baseline;font-size:12px}
   .cmp .hd .d{margin-left:auto;font-weight:700;font-size:12px}
@@ -309,6 +314,16 @@
       <button data-v="y">年度看板</button>
     </div>
 
+    <div class="card" id="assetCard" style="cursor:pointer">
+      <div class="card-h"><span class="t">存款余额</span><span class="m">累计收入 − 累计支出</span></div>
+      <div class="budget-num"><small style="font-size:14px;font-weight:600;color:var(--ink2);margin-right:2px">¥</small><span class="u" id="assetAll">0.00</span></div>
+      <div class="assetrow">
+        <div class="c"><div class="k">活钱 · 随时能花</div><div class="v" id="assetCash">¥0.00</div></div>
+        <div class="c"><div class="k">投资 · 理财不能即取</div><div class="v" id="assetInv">¥0.00</div></div>
+      </div>
+      <div class="prog-foot"><span id="assetNote">点这里设投资金额</span><span class="r" id="assetShare"></span></div>
+    </div>
+
     <div id="dashM">
     <div class="seg" id="monthSeg">
       <button data-m="-1">‹ 上月</button>
@@ -457,6 +472,7 @@
       <div class="li" id="btnResetPass">重设密码<span class="r">忘了密码用这个</span></div>
       <div class="li" id="btnChan">支付渠道<span class="r" id="chanState">6 个</span></div>
       <div class="li" id="btnBudget">每月预算<span class="r" id="budgetState">未设置</span></div>
+      <div class="li" id="btnAsset">存款设置<span class="r" id="assetState">未设置</span></div>
       <div class="li" id="btnAI">AI 解析<span class="r" id="aiState">本地规则</span></div>
       <div class="li" id="btnExport">导出全部（账单+设置）<span class="r">备份</span></div>
       <div class="li" id="btnImport">导入全部<span class="r">还原</span></div>
@@ -472,7 +488,7 @@
       换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置+登录状态），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
       忘记密码：点上面「重设密码」直接设新的，不用邮箱验证。<br>
       备份文件里含你的 AI Key 和登录凭证，别发给别人。<br>
-      <span style="color:#B3A395;font-size:11px">v1.14 · 2026-11-27</span></div>
+      <span style="color:#B3A395;font-size:11px">v1.17 · 2026-11-27</span></div>
     <input type="file" id="fileIn" accept="application/json" style="display:none">
   </section>
 
@@ -507,9 +523,13 @@
 const LS_KEY = 'tomato_book_v1';
 const LS_BUDGET = 'tomato_budget_v1';
 const LS_AI = 'tomato_ai_v1';
+const LS_ASSET = 'tomato_asset_v1';
 let BUDGET = { amount: 0 };
 let AI = { base:'', key:'', model:'' };
+/* 存款：期初余额 + 投资(理财)金额 —— 存款余额=期初+累计收入-累计支出，其中投资部分不算活钱 */
+let ASSET = { initial: 0, invest: 0 };
 try{ BUDGET = JSON.parse(localStorage.getItem(LS_BUDGET) || '{"amount":0}'); }catch(e){ BUDGET = {amount:0}; }
+try{ ASSET = Object.assign(ASSET, JSON.parse(localStorage.getItem(LS_ASSET) || '{}')); }catch(e){}
 try{ AI = JSON.parse(localStorage.getItem(LS_AI) || '{"base":"","key":"","model":""}'); }catch(e){ AI = {base:'',key:'',model:''}; }
 
 const LS_SB = 'tomato_sb_v1';
@@ -710,6 +730,7 @@ function renderDash(){
   document.getElementById('cmpHint').textContent = (pRef.getMonth()+1) + '月 → ' + (ref.getMonth()+1) + '月';
 
   renderYearAll();
+  renderAsset();
 
   /* 月度 / 年度 视图切换 */
   document.getElementById('dashM').style.display = (dashView === 'm') ? '' : 'none';
@@ -967,6 +988,7 @@ function saveBill(){
   const f = view.form;
   const amt = parseFloat(f.amount);
   if(!amt || amt<=0){ toast('先输入金额 🌰'); return; }
+  if(!f.cat){ toast('先选一个分类 🍅'); return; }
 
   const base = new Date(f.date+'T00:00:00');
   const now = new Date();
@@ -1017,7 +1039,9 @@ const CAT_WORDS = {
   home:['房租','水电','物业','燃气','宽带'],
   game:['游戏','皮肤','steam','充值','网吧'],
   study:['书','课程','培训','考试','文具'],
-  gift:['红包','份子','礼物','随礼','请客']
+  gift:['红包','份子','礼物','随礼','请客'],
+  other:['存款','存入','转出','转入','取现','还款','还信用卡','还花呗','还房贷','转账','利息','分红','工资','收入','奖金','报销',
+         '退款','返现','还钱','宠物','快递','话费','流量']
 };
 
 function zhNum(s){
@@ -1050,7 +1074,7 @@ function parseQuick(text){
   if(amt) out.amount = String(amt);
 
   // 收支
-  const incomeKw = /(工资|发了|到账|收到|报销|退款|奖金|进账|收入)/;
+  const incomeKw = /(工资|发了|到账|收到|报销|退款|奖金|进账|收入|存款|存入|转入|利息|分红|返现|退回)/;
   out.type = incomeKw.test(t) ? 'income' : 'expense';
 
   // 渠道
@@ -1063,17 +1087,21 @@ function parseQuick(text){
     if(CAT_WORDS[k].some(w=>t.includes(w))){ out.cat = k; break; }
   }
   if(!out.cat){
-    out.cat = out.type==='income' ? 'other' : 'meal';
+    /* 认不出来就别瞎猜成餐饮：收入兜到「其他」，支出留空让用户点一下 */
+    out.cat = out.type==='income' ? 'other' : null;
   }
 
   // 事由：去掉数字/渠道词/动词/语气词
   let title = t
     .replace(/\d+(\.\d+)?/g,'')
     .replace(/(元|块钱|块|毛|角|rmb|¥)/g,'')
-    .replace(/(用|微信|微信支付|支付宝|花呗|抖音|美团|现金|银行卡|刷卡)/g,'')
+    /* 只删「用微信支付」这类整段，避免把「信用卡」的「用」吃掉 */
+    .replace(/(用|拿|刷)(微信支付|微信|支付宝|花呗|抖音|美团|现金|银行卡|信用卡)/g,'')
+    .replace(/(微信支付|微信|支付宝|花呗|抖音|美团|现金|刷卡)/g,'')
     .replace(/(今天|昨天|前天|早上|中午|晚上|刚刚|买了|买|支付|支出|花了|花|一共|总共|了|的)/g,'')
+    .replace(/^(个|只|件|瓶|袋|张|双|杯)/,'')
     .replace(/[，,。.\s]/g,'');
-  out.title = title.slice(0,10) || (catOf(out.cat).n);
+  out.title = title.slice(0,10) || (out.cat ? catOf(out.cat).n : '记账');
 
   return out;
 }
@@ -1093,6 +1121,38 @@ function go(name){
   if(name==='mine') renderMine();
 }
 function renderAll(){ renderDash(); renderBills(); renderMine(); }
+
+/* 存款余额：期初 + 累计收入 − 累计支出，再切成「活钱 / 投资」两块 */
+function assetCalc(){
+  const inc = DB.filter(b=>b.type==='income').reduce((s,b)=>s+b.amount,0);
+  const out = DB.filter(b=>b.type==='expense').reduce((s,b)=>s+b.amount,0);
+  const init = Number(ASSET.initial) || 0;
+  const invest = Math.max(0, Number(ASSET.invest) || 0);
+  const all = init + inc - out;
+  return { inc, out, init, invest, all: Math.round(all*100)/100, cash: Math.round((all - invest)*100)/100 };
+}
+function renderAsset(){
+  const a = assetCalc();
+  const elAll = document.getElementById('assetAll');
+  elAll.textContent = (a.all<0?'-':'') + money(Math.abs(a.all));
+  elAll.style.color = a.all<0 ? '#CE5A4F' : '#4A3B32';
+
+  const elCash = document.getElementById('assetCash');
+  elCash.textContent = (a.cash<0?'-¥':'¥') + money(Math.abs(a.cash));
+  elCash.style.color = a.cash<0 ? '#CE5A4F' : '#7d9a63';
+
+  document.getElementById('assetInv').textContent = '¥' + money(a.invest);
+  const note = document.getElementById('assetNote');
+  const share = document.getElementById('assetShare');
+  if(a.invest > 0 || a.init > 0){
+    note.textContent = '期初 ¥' + money(a.init) + (a.invest>0 ? ' · 投资 ¥' + money(a.invest) : '');
+    share.textContent = (a.all > 0 && a.invest > 0) ? ('投资占 ' + Math.round(a.invest/a.all*100) + '%') : '';
+  }else{
+    note.textContent = '点这里设期初存款 / 投资金额';
+    share.textContent = '';
+  }
+  if(a.invest > a.all && a.all >= 0) note.textContent = '投资比余额还多，检查一下设置';
+}
 
 /* iOS：输入完了要能自己缩回去 */
 document.addEventListener('keydown', function(e){
@@ -1114,6 +1174,9 @@ function renderMine(){
   const total = DB.filter(b=>b.type==='expense').reduce((s,b)=>s+b.amount,0);
   document.getElementById('mineStat').textContent = n ? `共 ${n} 笔记录 · 累计支出 ¥${money(total)}` : '还没有记录';
   document.getElementById('budgetState').textContent = BUDGET.amount > 0 ? '¥'+money(BUDGET.amount)+'/月' : '未设置';
+  const ac = assetCalc();
+  document.getElementById('assetState').textContent =
+    (ac.init || ac.invest) ? ('活钱 ¥'+money(Math.max(0,ac.cash))+' · 投资 ¥'+money(ac.invest)) : '未设置';
   document.getElementById('aiState').textContent = (AI.key && AI.base) ? '已接入大模型' : '本地规则';
   document.getElementById('cloudState').textContent = sbOn() ? (SB.email || '已连接') : (sbReady() ? '未登录' : '未配置');
   document.getElementById('chanState').textContent = CHANS.length + ' 个';
@@ -1295,12 +1358,16 @@ document.getElementById('quickParse').onclick = async ()=>{
   if(!r) r = parseQuick(txt);
   if(!r || !r.amount){ toast('没认出金额，试试「买烤肠 微信 5元」'); return; }
   view.form.type = r.type;
-  view.form.cat = r.cat;
+  view.form.cat = r.cat || null;
   if(r.channel || r.chan) view.form.chan = r.channel || r.chan;
   view.form.title = r.title;
   view.form.amount = r.amount;
   renderAdd();
-  toast('已识别：'+catOf(r.cat).n+' · ¥'+money(parseFloat(r.amount)));
+  if(!view.form.cat){
+    toast('金额认出来了，分类没认出来：点一下分类再保存');
+  }else{
+    toast('已识别：'+catOf(r.cat).n+' · ¥'+money(parseFloat(r.amount)));
+  }
 };
 
 /* ---------- 预算 / AI 设置 ---------- */
@@ -1318,6 +1385,30 @@ function openBudgetSheet(){
 }
 document.getElementById('budgetCard').onclick = openBudgetSheet;
 document.getElementById('btnBudget').onclick = openBudgetSheet;
+
+/* ---------- 存款设置（期初 + 投资） ---------- */
+function openAssetSheet(){
+  openSheet('存款设置', [
+    {k:'initial', label:'期初存款（元）', type:'number', ph:'记账开始前账上就有多少，没有就填 0',
+     value: ASSET.initial || '',
+     hint:'用来校准起点，不然「收入−支出」只是记账之后的净额。'},
+    {k:'invest', label:'投资 / 理财金额（元）', type:'number', ph:'比如周周宝里放了多少',
+     value: ASSET.invest || '',
+     hint:'这部分算在存款余额里，但不算活钱。随时可改。'}
+  ], v=>{
+    ASSET = { initial: Number(v.initial) || 0, invest: Number(v.invest) || 0 };
+    localStorage.setItem(LS_ASSET, JSON.stringify(ASSET));
+    renderDash(); renderMine();
+    if(sbOn()){
+      sbPushAsset().then(()=> toast('存款余额已更新，并同步到云端'))
+                    .catch(()=> toast('存款余额已更新（云端没存上，只存了本机）', 2600));
+    }else{
+      toast('存款余额已更新：活钱 ¥' + money(Math.max(0, assetCalc().cash)));
+    }
+  });
+}
+document.getElementById('assetCard').onclick = openAssetSheet;
+document.getElementById('btnAsset').onclick = openAssetSheet;
 
 document.getElementById('btnAI').onclick = ()=>{
   openSheet('AI 解析设置', [
@@ -1496,11 +1587,43 @@ async function sbClearCloud(){
   const rows = await g.json();
   for(const row of rows) await sbDeleteRow(row.id);
 }
+/* ---------- 资产设置（期初存款 / 投资金额）云同步 ---------- */
+async function sbPushAsset(){
+  if(!sbOn()) return;
+  const r = await sbFetch('/rest/v1/asset', {
+    method:'POST',
+    headers: Object.assign({}, sbH(), { 'Prefer':'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify([{ user_id: SB.uid,
+      initial: Number(ASSET.initial) || 0,
+      invest:  Number(ASSET.invest)  || 0,
+      updated_at: new Date().toISOString() }])
+  });
+  if(r.status === 404) throw new Error('asset 表还没建：去 SQL Editor 跑「建表脚本」里的资产表部分');
+  if(!r.ok) throw new Error('资产设置上传失败 HTTP ' + r.status);
+}
+async function sbPullAsset(){
+  if(!sbOn()) return null;
+  const r = await sbFetch('/rest/v1/asset?select=initial,invest&user_id=eq.' + encodeURIComponent(SB.uid));
+  if(!r.ok) return null;                 // 表还没建就静默跳过，不影响账单同步
+  const rows = await r.json();
+  if(!rows || !rows.length) return false;
+  ASSET = { initial: Number(rows[0].initial) || 0, invest: Number(rows[0].invest) || 0 };
+  localStorage.setItem(LS_ASSET, JSON.stringify(ASSET));
+  return true;
+}
+
 /* 同步 = 只拉取（云端 → 本机）。写入云端只发生在：新增、修改、单条删除、清空、主动上传。
    这样别处删掉的账不会在本机被“补传”复活。 */
 async function sbSync(opts){
   opts = opts || {};
   lastSyncAt = Date.now();
+
+  /* 先对齐资产设置：云端有则以云端为准；云端没有但本机设过，就推上去 */
+  try{
+    const had = await sbPullAsset();
+    if(had === false && (Number(ASSET.initial) || Number(ASSET.invest))) await sbPushAsset();
+  }catch(e){}
+
   const r = await sbFetch('/rest/v1/bills?select=*&order=ts.asc');
   if(r.status === 404) throw new Error('bills 表还没建：去 SQL Editor 跑建表脚本');
   if(!r.ok) throw new Error('拉取失败 HTTP ' + r.status);
@@ -1683,6 +1806,7 @@ document.getElementById('btnExport').onclick = ()=>{
     exportedAt:new Date().toISOString(),
     bills:DB,
     budget:BUDGET,
+    asset:ASSET,
     channels:CHANS,
     ai:AI,
     sb:{ url:SB.url, key:SB.key, email:SB.email || '',
@@ -1712,6 +1836,10 @@ document.getElementById('fileIn').onchange = e=>{
     if(d.budget && Number(d.budget.amount) > 0){
       BUDGET = { amount:Number(d.budget.amount) };
       localStorage.setItem(LS_BUDGET, JSON.stringify(BUDGET));
+    }
+    if(d.asset){
+      ASSET = { initial:Number(d.asset.initial) || 0, invest:Number(d.asset.invest) || 0 };
+      localStorage.setItem(LS_ASSET, JSON.stringify(ASSET));
     }
     if(Array.isArray(d.channels) && d.channels.length){
       CHANS = d.channels.filter(x=>x && x.k).map(x=>({ k:String(x.k), c:x.c || '#B0A69C' }));
@@ -1745,7 +1873,10 @@ document.getElementById('fileIn').onchange = e=>{
 document.getElementById('btnSeed').onclick = ()=>{ seed(); renderAll(); toast('已填充示例数据'); };
 document.getElementById('btnClear').onclick = async ()=>{
   if(!confirm('确定清空全部记录？本机与云端都会被清空，不可撤销。')) return;
-  DB = []; save(); renderAll();
+  DB = []; save();
+  ASSET = { initial:0, invest:0 }; localStorage.setItem(LS_ASSET, JSON.stringify(ASSET));
+  renderAll();
+  if(sbOn()){ try{ await sbPushAsset(); }catch(e){} }
   if(sbOn()){
     try{ await sbClearCloud(); toast('已清空本机与云端'); }
     catch(e){ toast('本机已清空，但云端没删成功：' + e.message, 3200); }
