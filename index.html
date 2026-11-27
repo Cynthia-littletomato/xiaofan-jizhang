@@ -401,6 +401,7 @@
 
     <div class="list">
       <div class="li" id="btnCloud">云同步<span class="r" id="cloudState">未配置</span></div>
+      <div class="li" id="btnResetPass">重设密码<span class="r">忘了密码用这个</span></div>
       <div class="li" id="btnChan">支付渠道<span class="r" id="chanState">6 个</span></div>
       <div class="li" id="btnBudget">每月预算<span class="r" id="budgetState">未设置</span></div>
       <div class="li" id="btnAI">AI 解析<span class="r" id="aiState">本地规则</span></div>
@@ -413,8 +414,9 @@
     <div class="tip">
       未开启云同步时，数据只存在本机浏览器；开启后只同步到你自己的 Supabase 项目。<br>
       手机上用浏览器打开后「添加到主屏幕」，就是一个独立的记账 App。<br>
-      换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
-      备份文件里含你的 AI 接口 Key，别发给别人。<br>
+      换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置+登录状态），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
+      忘记密码：点上面「重设密码」直接设新的，不用邮箱验证。<br>
+      备份文件里含你的 AI Key 和登录凭证，别发给别人。<br>
       <span style="color:#B3A395;font-size:11px">v1.10 · 2026-11-27</span></div>
     <input type="file" id="fileIn" accept="application/json" style="display:none">
   </section>
@@ -1400,7 +1402,7 @@ function openCloudSheet(){
     { k:'email', label:'登录邮箱（可留空）', ph:'you@mail.com', value: SB.email || '',
       hint:'和下面的密码配成一对账号，换手机用同一组就能同步。' },
     { k:'pass', label:'密码（推荐填，最稳）', type:'password', ph:'至少 6 位',
-      hint:'填了就用「邮箱+密码」登录：不发邮件、不用验证码。第一次点保存会自动注册这个邮箱，以后同一组邮箱密码直接登录。' }
+      hint:'填了就用「邮箱+密码」登录：不发邮件、不用验证码。第一次点保存会自动注册，以后同一组直接登录。忘记密码：去 Supabase → Authentication → Users 删掉自己那条，回来用同一邮箱+新密码再保存，本地账单会自动重传。' }
   ], async v=>{
     SB.url = sbNormalizeUrl(v.url);
     SB.key = (v.key || DEFAULT_SB_KEY).trim();
@@ -1425,6 +1427,36 @@ function openCloudSheet(){
   });
 }
 document.getElementById('btnCloud').onclick = openCloudSheet;
+
+/* 重设密码：不用邮箱验证码，本机已登录就能直接改 */
+function openResetSheet(){
+  const who = sbOn() ? ('当前账号：' + (SB.email || '已登录')) : '本机还没登录，会先用已保存的凭证自动登录';
+  openSheet('重设密码', [
+    { k:'p1', label:'新密码', type:'password', ph:'至少 6 位',
+      hint: who + '。改完立刻生效，以后用这个新密码登录，不用收邮件。' },
+    { k:'p2', label:'再输一次', type:'password', ph:'再打一遍新密码', hint:'' }
+  ], async v=>{
+    const np = (v.p1 || '').trim();
+    if(np.length < 6){ toast('密码至少 6 位', 2600); return; }
+    if(np !== (v.p2 || '').trim()){ toast('两次输入不一致', 2600); return; }
+    if(!sbOn()){
+      const ok = await sbRefreshToken().catch(()=>false);
+      if(!ok || !sbOn()){ toast('本机凭证已失效：先用「导入全部」恢复备份，或用邮箱+密码登录一次', 3600); return; }
+    }
+    let r;
+    try{
+      r = await fetch(SB.url + '/auth/v1/user', { method:'PUT', headers: sbH(), body: JSON.stringify({ password: np }) });
+    }catch(e){ toast('连不上 Supabase，等 10 秒再试一次', 3000); return; }
+    if(!r.ok){
+      let b = '';
+      try{ b = await r.text(); }catch(e){}
+      toast('改密码失败 HTTP ' + r.status + '：' + b.slice(0,80), 3400);
+      return;
+    }
+    toast('密码已更新 ✓ 下次用新密码登录', 3200);
+  });
+}
+document.getElementById('btnResetPass').onclick = openResetSheet;
 document.getElementById('btnChan').onclick = openChanSheet;
 
 /* 我的页 */
@@ -1436,7 +1468,8 @@ document.getElementById('btnExport').onclick = ()=>{
     budget:BUDGET,
     channels:CHANS,
     ai:AI,
-    sb:{ url:SB.url, key:SB.key, email:SB.email || '' }
+    sb:{ url:SB.url, key:SB.key, email:SB.email || '',
+         access:SB.access || '', refresh:SB.refresh || '', uid:SB.uid || '' }
   };
   const blob = new Blob([JSON.stringify(bundle, null, 2)], {type:'application/json'});
   const a = document.createElement('a');
@@ -1475,6 +1508,9 @@ document.getElementById('fileIn').onchange = e=>{
       SB.url = sbNormalizeUrl(d.sb.url);
       if(d.sb.key) SB.key = d.sb.key;
       if(d.sb.email) SB.email = d.sb.email;
+      if(d.sb.access) SB.access = d.sb.access;
+      if(d.sb.refresh) SB.refresh = d.sb.refresh;
+      if(d.sb.uid) SB.uid = d.sb.uid;
       sbSave();
     }
     if(!CHANS.some(c=>c.k===view.form.chan)) view.form.chan = CHANS[0].k;
@@ -1482,6 +1518,10 @@ document.getElementById('fileIn').onchange = e=>{
     if(view.screen==='add') renderAdd();
     toast('已恢复 '+DB.length+' 笔账单与设置');
     e.target.value = '';
+    /* 备份里带了登录凭证 → 自动恢复会话并同步，省得重新登录 */
+    if(SB.refresh){
+      sbRefreshToken().then(ok=>{ if(ok){ renderMine(); sbSync().catch(()=>{}); } }).catch(()=>{});
+    }
   };
   rd.readAsText(f);
 };
