@@ -9,7 +9,6 @@
 <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#F7EFD7">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="小番记账">
 <meta name="application-name" content="小番记账">
@@ -1218,11 +1217,19 @@ async function sbFetch(path, opts){
   return r;
 }
 async function sbOtp(email){
-  const r = await fetch(SB.url + '/auth/v1/otp', {
+  // 关键：把 redirect_to 显式指定成当前页面，邮件里的链接才会跳回 App 并带上 access_token
+  const back = location.origin + location.pathname;
+  const q = (location.protocol === 'file:') ? '' : ('?redirect_to=' + encodeURIComponent(back));
+  const r = await fetch(SB.url + '/auth/v1/otp' + q, {
     method:'POST', headers:{ 'apikey':SB.key, 'Content-Type':'application/json' },
     body: JSON.stringify({ email: email, create_user: true })
   });
-  if(!r.ok) throw new Error('发送失败 HTTP ' + r.status);
+  if(!r.ok){
+    let b = '';
+    try{ b = await r.text(); }catch(e){}
+    if(r.status === 429) throw new Error('发得太频繁了，等 60 秒再试');
+    throw new Error('发送失败 HTTP ' + r.status + (b ? '：' + b.slice(0,110) : ''));
+  }
 }
 async function sbVerify(email, token){
   // Supabase 的 6 位码可能来自不同模板：magiclink(email) / 注册确认(signup) / 重发(invite)
@@ -1330,8 +1337,8 @@ async function sbProbe(){
 
 function openCodeSheet(email){
   openSheet('输入邮箱验证码', [
-    { k:'code', label:'6 位验证码', ph:'123456',
-      hint:'打开邮箱里的邮件，找 6 位数字，填进来就完成登录。' }
+    { k:'code', label:'6 位验证码（邮件里有就填）', ph:'123456',
+      hint:'最快的方式：回邮箱点那封「确认邮箱」邮件里的链接，会直接跳回 App 并自动登录，不用手填。若邮件里带 6 位数字，也可填在这里，10 分钟内有效。' }
   ], async v=>{
     if(!v.code) return;
     try{
@@ -1349,7 +1356,7 @@ function openCloudSheet(){
     { k:'key', label:'Publishable / anon key', ph:'sb_publishable_…', value: SB.key,
       hint:'已预填你给的 publishable key；表建好、RLS 开启后这个 key 公开也无妨。' },
     { k:'email', label:'登录邮箱（可留空）', ph:'you@mail.com', value: SB.email || '',
-      hint:'填了就发 6 位验证码登录，换手机用同一邮箱就能同步。' }
+      hint:'填了就发登录邮件：收到后点邮件里的确认链接，会直接跳回 App 自动登录；邮件里若带 6 位数字也可以填到下一步。' }
   ], async v=>{
     SB.url = sbNormalizeUrl(v.url);
     SB.key = (v.key || DEFAULT_SB_KEY).trim();
