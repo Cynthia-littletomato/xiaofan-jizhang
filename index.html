@@ -446,17 +446,18 @@
       <div class="li" id="btnExport">导出全部（账单+设置）<span class="r">备份</span></div>
       <div class="li" id="btnImport">导入全部<span class="r">还原</span></div>
       <div class="li" id="btnSeed">填充示例账单<span class="r">看效果</span></div>
-      <div class="li" id="btnSyncNow">立即同步<span class="r">云端 ↔ 本机</span></div>
+      <div class="li" id="btnPush">上传本机到云端<span class="r">覆盖云端</span></div>
+      <div class="li" id="btnSyncNow">立即同步<span class="r">云端 → 本机</span></div>
       <div class="li" id="btnClear" style="color:#CE5A4F">清空全部记录<span class="r">本机+云端</span></div>
     </div>
 
     <div class="tip">
       未开启云同步时，数据只存在本机浏览器；开启后只同步到你自己的 Supabase 项目。<br>
-      开启云同步后：每次打开 App、从后台切回来都会自动对齐一次，点「立即同步」可手动对齐；「清空全部记录」会连云端一起清。<br>
+      规则：记账/修改/删除会立刻写进云端；打开 App、切回 App、点「立即同步」都只从云端拉（不推回，旧账不会复活）。「清空全部记录」本机云端一起清；想把本机账覆盖到云端，点「上传本机到云端」。<br>
       换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置+登录状态），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
       忘记密码：点上面「重设密码」直接设新的，不用邮箱验证。<br>
       备份文件里含你的 AI Key 和登录凭证，别发给别人。<br>
-      <span style="color:#B3A395;font-size:11px">v1.12 · 2026-11-27</span></div>
+      <span style="color:#B3A395;font-size:11px">v1.13 · 2026-11-27</span></div>
     <input type="file" id="fileIn" accept="application/json" style="display:none">
   </section>
 
@@ -1463,23 +1464,27 @@ async function sbClearCloud(){
   const rows = await g.json();
   for(const row of rows) await sbDeleteRow(row.id);
 }
-async function sbSync(pushLocal){
+/* 同步 = 只拉取（云端 → 本机）。写入云端只发生在：新增、修改、单条删除、清空、主动上传。
+   这样别处删掉的账不会在本机被“补传”复活。 */
+async function sbSync(opts){
+  opts = opts || {};
   lastSyncAt = Date.now();
   const r = await sbFetch('/rest/v1/bills?select=*&order=ts.asc');
   if(r.status === 404) throw new Error('bills 表还没建：去 SQL Editor 跑建表脚本');
   if(!r.ok) throw new Error('拉取失败 HTTP ' + r.status);
   const rows = await r.json();
-  if(rows.length === 0 && DB.length > 0 && pushLocal !== false){
-    for(const b of DB) await sbUpsert(b);          // 云端是空的、本地有账 → 全部推上去
-    return;
+
+  /* 云端是空的、本机还有账：不擅自推送，也不擅自清空，交给用户决定 */
+  if(rows.length === 0 && DB.length > 0){
+    if(!opts.pushLocal) return { empty:true, local:DB.length };
+    for(const b of DB) await sbUpsert(b);
+    return { pushed:DB.length };
   }
-  const cloudIds = new Set(rows.map(x=>x.id));
-  if(pushLocal !== false){
-    for(const b of DB){ if(!cloudIds.has(b.id)) await sbUpsert(b); }   // 本地新增的补传
-  }
+
   DB = rows.map(x => ({ id:x.id, type:x.type, amount:Number(x.amount), cat:x.cat,
     channel:x.channel, title:x.title, ts:new Date(x.ts).getTime() }));
   save(); renderAll();
+  return { pulled:DB.length };
 }
 
 /* 只填项目 ref（如 abcdefghijklmnop）也能自动补全成完整 URL */
@@ -1526,9 +1531,9 @@ function openCodeSheet(email){
     if(!v.code) return;
     try{
       await sbVerify(email, v.code);
-      await sbSync();
+      const res = await sbSync();
       renderMine(); renderDash(); renderBills();
-      toast('云同步已开启 ☁️');
+      toast('云同步已开启 ☁️' + (res && res.empty ? ('（云端空，本机 '+res.local+' 笔可点「上传本机到云端」）') : ''), 3200);
     }catch(e){ toast(e.message); }
   });
 }
@@ -1553,9 +1558,13 @@ function openCloudSheet(){
     if(v.pass){
       try{
         const how = await sbPasswordLogin(v.email.trim(), v.pass);
-        await sbSync();
+        const res = await sbSync();
         renderMine(); renderDash(); renderBills();
-        toast(how === 'signup' ? '账号已创建，云同步开启 ☁️' : '云同步已开启 ☁️');
+        if(res && res.empty){
+          toast('登录成功。云端还是空的：想把本机 ' + res.local + ' 笔传上去，就点「上传本机到云端」', 4000);
+        }else{
+          toast(how === 'signup' ? '账号已创建，云同步开启 ☁️' : '云同步已开启 ☁️');
+        }
       }catch(e){ toast(sbErrMsg(e), 3600); }
       return;
     }
@@ -1597,15 +1606,33 @@ function openResetSheet(){
 }
 document.getElementById('btnResetPass').onclick = openResetSheet;
 
-/* 立即同步：手动把云端与本机对齐 */
+/* 立即同步：只从云端拉取，不会把本机旧账推回云端 */
 document.getElementById('btnSyncNow').onclick = async ()=>{
   if(!sbOn()){ toast('先登录云同步再同步', 2600); return; }
   toast('同步中…', 1200);
   try{
-    await sbSync();
+    const res = await sbSync();
     renderAll();
-    toast('已同步：本机 ' + DB.length + ' 笔', 2400);
+    if(res && res.empty){
+      toast('云端是空的，本机有 ' + res.local + ' 笔：想保留就点「上传本机到云端」', 3600);
+    }else{
+      toast('已同步：本机 ' + DB.length + ' 笔', 2400);
+    }
   }catch(e){ toast(sbErrMsg(e), 3000); }
+};
+
+/* 上传本机到云端：覆盖云端（用于换机迁移、或云端被清空后恢复） */
+document.getElementById('btnPush').onclick = async ()=>{
+  if(!sbOn()){ toast('先登录云同步', 2600); return; }
+  if(!DB.length){ toast('本机还没有账单', 2400); return; }
+  if(!confirm('会用本机的 ' + DB.length + ' 笔覆盖云端，云端原有账单将被删除。继续？')) return;
+  toast('上传中…', 1200);
+  try{
+    await sbClearCloud();
+    for(const b of DB) await sbUpsert(b);
+    lastSyncAt = Date.now();
+    toast('已上传 ' + DB.length + ' 笔到云端 ☁️', 2600);
+  }catch(e){ toast(sbErrMsg(e), 3400); }
 };
 
 /* 回到 App（从后台切回来 / 切到桌面图标）就自动同步一次 */
