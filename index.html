@@ -1225,15 +1225,28 @@ async function sbOtp(email){
   if(!r.ok) throw new Error('发送失败 HTTP ' + r.status);
 }
 async function sbVerify(email, token){
-  const r = await fetch(SB.url + '/auth/v1/verify', {
-    method:'POST', headers:{ 'apikey':SB.key, 'Content-Type':'application/json' },
-    body: JSON.stringify({ type:'email', email: email, token: token })
-  });
-  if(!r.ok) throw new Error('验证失败 HTTP ' + r.status);
-  const d = await r.json();
-  SB.access = d.access_token; SB.refresh = d.refresh_token || '';
-  SB.uid = d.user ? d.user.id : ''; SB.email = email;
-  sbSave();
+  // Supabase 的 6 位码可能来自不同模板：magiclink(email) / 注册确认(signup) / 重发(invite)
+  // 依次尝试，任一成功即登录
+  const types = ['email','signup','magiclink','invite'];
+  let last = '';
+  for(const ty of types){
+    const r = await fetch(SB.url + '/auth/v1/verify', {
+      method:'POST', headers:{ 'apikey':SB.key, 'Content-Type':'application/json' },
+      body: JSON.stringify({ type: ty, email: email, token: token })
+    });
+    if(r.ok){
+      const d = await r.json();
+      SB.access = d.access_token; SB.refresh = d.refresh_token || '';
+      SB.uid = d.user ? d.user.id : ''; SB.email = email;
+      sbSave();
+      return;
+    }
+    let body = '';
+    try{ body = await r.text(); }catch(e){}
+    last = body || ('HTTP ' + r.status);
+    if(!/invalid|expired|not found/i.test(body) && r.status >= 500) break;
+  }
+  throw new Error('验证码不对或已过期：回 Supabase 确认邮件模板里有 {{ .Token }}，再发一次新码。(' + last.slice(0,90) + ')');
 }
 async function sbRefreshToken(){
   if(!SB.refresh) return false;
@@ -1457,6 +1470,25 @@ function seed(){
 }
 
 /* ---------- 启动 ---------- */
+/* 兜底：如果直接点了邮件里的确认链接，Supabase 会把 access_token 放在 # 后面，这里接住它 */
+(async function hashLogin(){
+  const h = location.hash || '';
+  if(h.indexOf('access_token=') < 0) return;
+  const p = new URLSearchParams(h.replace(/^#/, ''));
+  const at = p.get('access_token');
+  if(!at) return;
+  SB.access = at;
+  SB.refresh = p.get('refresh_token') || SB.refresh;
+  sbSave();
+  try{ history.replaceState(null, '', location.pathname + location.search); }catch(e){}
+  try{
+    const u = await fetch(SB.url + '/auth/v1/user', { headers:{ 'apikey':SB.key, 'Authorization':'Bearer '+SB.access } });
+    if(u.ok){ const ui = await u.json(); SB.uid = ui.id || ''; SB.email = ui.email || SB.email; sbSave(); }
+  }catch(e){}
+  renderMine();
+  sbSync().catch(()=>{});
+})();
+
 if(!DB.length){
   const hint = localStorage.getItem('tomato_seeded');
   if(!hint){ seed(); localStorage.setItem('tomato_seeded','1'); }
