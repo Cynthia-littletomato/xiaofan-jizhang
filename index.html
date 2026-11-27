@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>小番记账</title>
 <link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -240,6 +240,21 @@
     background:rgba(74,59,50,.92);color:#fff;font-size:12px;padding:8px 14px;border-radius:12px;
     opacity:0;transition:.22s;z-index:60;white-space:nowrap;pointer-events:none}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* ---------- iOS 输入框聚焦不再放大页面 ----------
+     iOS Safari 只在输入框字号 <16px 时自动放大且不回缩，所以 iOS 上统一 16px；
+     配合 maximum-scale=1 一起兜底。桌面/安卓保持原字号。 */
+  @supports (-webkit-touch-callout: none){
+    input:not([type=hidden]), textarea, select{
+      font-size:16px !important;
+      -webkit-text-size-adjust:100%;
+    }
+    .quick input, .search input, .field input, .f input, .chanadd input{
+      letter-spacing:-.2px;
+    }
+    .field input[type=date]{font-size:16px !important;width:132px}
+    .quick button{font-size:16px}
+  }
 </style>
 </head>
 <body>
@@ -457,7 +472,7 @@
       换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置+登录状态），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
       忘记密码：点上面「重设密码」直接设新的，不用邮箱验证。<br>
       备份文件里含你的 AI Key 和登录凭证，别发给别人。<br>
-      <span style="color:#B3A395;font-size:11px">v1.13 · 2026-11-27</span></div>
+      <span style="color:#B3A395;font-size:11px">v1.14 · 2026-11-27</span></div>
     <input type="file" id="fileIn" accept="application/json" style="display:none">
   </section>
 
@@ -1067,6 +1082,8 @@ function parseQuick(text){
    交互与路由
    ========================================================= */
 function go(name){
+  /* 切屏时收起键盘，避免 iOS 停留在放大状态 */
+  if(document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) document.activeElement.blur();
   view.screen = name === 'add' ? 'add' : name;
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id==='scr-'+name));
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.go===name));
@@ -1076,6 +1093,21 @@ function go(name){
   if(name==='mine') renderMine();
 }
 function renderAll(){ renderDash(); renderBills(); renderMine(); }
+
+/* iOS：输入完了要能自己缩回去 */
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Enter' && e.target && e.target.tagName === 'INPUT'){ e.preventDefault(); e.target.blur(); }
+});
+document.addEventListener('focusout', function(e){
+  if(!e.target || !/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  setTimeout(function(){
+    var ae = document.activeElement;
+    if(ae && /INPUT|TEXTAREA/.test(ae.tagName)) return;   // 还有别的输入框在编辑，先不动
+    document.documentElement.style.transform = 'none';
+    document.body.style.zoom = '';
+    if(window.scrollY || window.scrollX) window.scrollTo(0, 0);
+  }, 160);
+}, true);
 
 function renderMine(){
   const n = DB.length;
