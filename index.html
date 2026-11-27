@@ -414,7 +414,8 @@
       未开启云同步时，数据只存在本机浏览器；开启后只同步到你自己的 Supabase 项目。<br>
       手机上用浏览器打开后「添加到主屏幕」，就是一个独立的记账 App。<br>
       换电脑：用「导出全部」带走一个 json（账单+预算+渠道+设置），新设备「导入全部」即可；或登录同一个邮箱从云端拉回账单。<br>
-      备份文件里含你的 AI 接口 Key，别发给别人。</div>
+      备份文件里含你的 AI 接口 Key，别发给别人。<br>
+      <span style="color:#B3A395;font-size:11px">v1.10 · 2026-11-27</span></div>
     <input type="file" id="fileIn" accept="application/json" style="display:none">
   </section>
 
@@ -1216,6 +1217,46 @@ async function sbFetch(path, opts){
   }
   return r;
 }
+function sbStoreSession(d, email){
+  SB.access = d.access_token;
+  SB.refresh = d.refresh_token || '';
+  SB.uid = d.user ? d.user.id : '';
+  SB.email = email || SB.email;
+  sbSave();
+}
+/* 邮箱 + 密码登录：不发邮件、不依赖模板和 SMTP。第一次自动注册，之后直接登录 */
+async function sbPasswordLogin(email, pass){
+  const H = { 'apikey':SB.key, 'Content-Type':'application/json' };
+  const rd = async r => { try{ return await r.text(); }catch(e){ return ''; } };
+  let r;
+  try{
+    r = await fetch(SB.url + '/auth/v1/token?grant_type=password', {
+      method:'POST', headers:H, body: JSON.stringify({ email:email, password:pass })
+    });
+  }catch(e){ throw new Error('连不上（网络抖动或免费项目休眠），等 10 秒再点一次'); }
+  if(r.ok){ sbStoreSession(await r.json(), email); return 'login'; }
+  const b1 = await rd(r);
+  if(/email_not_confirmed|not confirmed/i.test(b1))
+    throw new Error('账号还没确认邮箱：去 Supabase → Authentication → Sign In/Providers → Email，关掉「Confirm email」再试');
+  if(!/Invalid login credentials|invalid_grant/i.test(b1))
+    throw new Error('登录失败 HTTP ' + r.status + '：' + b1.slice(0,100));
+  try{
+    r = await fetch(SB.url + '/auth/v1/signup', {
+      method:'POST', headers:H, body: JSON.stringify({ email:email, password:pass })
+    });
+  }catch(e){ throw new Error('连不上（网络抖动或免费项目休眠），等 10 秒再点一次'); }
+  if(!r.ok){
+    const b2 = await rd(r);
+    if(/already registered|already been registered/i.test(b2))
+      throw new Error('这个邮箱已注册过：去 Supabase → Authentication → Users 把这条用户删掉，再点保存一次（会重新建一个带密码的账号）');
+    if(/rate limit|429/i.test(b2) || r.status === 429)
+      throw new Error('项目发信额度用满了（429）：去 Supabase 关掉「Confirm email」再试，或等 1 小时');
+    throw new Error('注册失败 HTTP ' + r.status + '：' + b2.slice(0,100));
+  }
+  const d = await r.json();
+  if(d.access_token){ sbStoreSession(d, email); return 'signup'; }
+  throw new Error('没拿到登录会话：这个邮箱可能已注册（密码不对），或项目还开着「Confirm email」，去 Supabase 关掉再试');
+}
 async function sbOtp(email){
   // 关键：把 redirect_to 显式指定成当前页面，邮件里的链接才会跳回 App 并带上 access_token
   const back = location.origin + location.pathname;
@@ -1311,7 +1352,8 @@ function sbNormalizeUrl(raw){
 }
 function sbErrMsg(e){
   const m = (e && e.message) || '未知错误';
-  if(/Failed to fetch|NetworkError|load failed/i.test(m)) return '连不上，检查 Project URL 和网络';
+  if(/Failed to fetch|NetworkError|load failed|Load failed/i.test(m))
+    return '连不上 Supabase（网络抖动或项目休眠）：等 10 秒再点一次；反复这样说明你这台网络到 supabase.co 被拦';
   return m;
 }
 /* 保存前自检：直接探 bills 表（不要探 /rest/v1/ 根地址，它只接受 secret key，会误报 401） */
@@ -1356,7 +1398,9 @@ function openCloudSheet(){
     { k:'key', label:'Publishable / anon key', ph:'sb_publishable_…', value: SB.key,
       hint:'已预填你给的 publishable key；表建好、RLS 开启后这个 key 公开也无妨。' },
     { k:'email', label:'登录邮箱（可留空）', ph:'you@mail.com', value: SB.email || '',
-      hint:'填了就发登录邮件：收到后点邮件里的确认链接，会直接跳回 App 自动登录；邮件里若带 6 位数字也可以填到下一步。' }
+      hint:'和下面的密码配成一对账号，换手机用同一组就能同步。' },
+    { k:'pass', label:'密码（推荐填，最稳）', type:'password', ph:'至少 6 位',
+      hint:'填了就用「邮箱+密码」登录：不发邮件、不用验证码。第一次点保存会自动注册这个邮箱，以后同一组邮箱密码直接登录。' }
   ], async v=>{
     SB.url = sbNormalizeUrl(v.url);
     SB.key = (v.key || DEFAULT_SB_KEY).trim();
@@ -1365,10 +1409,19 @@ function openCloudSheet(){
     const pr = await sbProbe();
     if(!pr.ok){ toast(pr.msg, 3000); return; }
     if(!v.email){ toast('连接正常，已保存为待登录', 2200); return; }
+    if(v.pass){
+      try{
+        const how = await sbPasswordLogin(v.email.trim(), v.pass);
+        await sbSync();
+        renderMine(); renderDash(); renderBills();
+        toast(how === 'signup' ? '账号已创建，云同步开启 ☁️' : '云同步已开启 ☁️');
+      }catch(e){ toast(sbErrMsg(e), 3600); }
+      return;
+    }
     try{
       await sbOtp(v.email.trim());
       openCodeSheet(v.email.trim());
-    }catch(e){ toast(sbErrMsg(e), 3000); }
+    }catch(e){ toast(sbErrMsg(e), 3600); }
   });
 }
 document.getElementById('btnCloud').onclick = openCloudSheet;
